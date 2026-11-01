@@ -30,10 +30,10 @@ def check_clickjacking(url):
         if not url.startswith("http://") and not url.startswith("https://"):
             url = "http://" + url  # Default to HTTP if no protocol specified
         
-        # Send a GET request to the URL
+        # Send a GET request to the URL. Error responses are analyzed too:
+        # their framing headers are exactly what this tool exists to read.
         response = requests.get(url, timeout=10)
-        response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
-        
+
         headers = response.headers
         x_frame_options = headers.get('X-Frame-Options')
         content_security_policy = headers.get('Content-Security-Policy')
@@ -51,12 +51,22 @@ def check_clickjacking(url):
             
         if content_security_policy:
             messages.append(f"Content-Security-Policy header found: {content_security_policy}")
-            frame_ancestors_present = "frame-ancestors" in content_security_policy.lower()
-            frame_src_present = "frame-src" in content_security_policy.lower()
+            frame_ancestors_values = None
+            for directive in content_security_policy.split(';'):
+                parts = directive.strip().split()
+                if parts and parts[0].lower() == "frame-ancestors":
+                    frame_ancestors_values = [p.lower() for p in parts[1:]]
+                    break
 
-            if frame_ancestors_present or frame_src_present:
-                vulnerable = False
-                messages.append("Website is likely protected against clickjacking by Content-Security-Policy.")
+            if frame_ancestors_values is not None:
+                # Protection only when the value restricts framing: 'none',
+                # 'self', or named sources. A bare * permits anyone to frame.
+                restricting = [v for v in frame_ancestors_values if v != "*"]
+                if restricting:
+                    vulnerable = False
+                    messages.append("Website is likely protected against clickjacking by Content-Security-Policy frame-ancestors.")
+                else:
+                    messages.append("Content-Security-Policy frame-ancestors allows framing by any origin (*).")
             else:
                 messages.append("Content-Security-Policy header does not appear to have clickjacking protection.")
         else:
@@ -69,10 +79,10 @@ def check_clickjacking(url):
         return vulnerable, headers, messages
     except requests.exceptions.RequestException as e:
         logging.error(f"Request error: {e}")
-        return True, {}, [f"Error during request: {e}"]  # Treat as vulnerable on error.
+        return None, {}, [f"Error during request: {e}"]  # Inconclusive: the target was not reached.
     except Exception as e:
         logging.exception(f"An unexpected error occurred: {e}")
-        return True, {}, [f"An unexpected error occurred: {e}"]   # Treat as vulnerable on error.
+        return None, {}, [f"An unexpected error occurred: {e}"]  # Inconclusive.
 
 def main():
     """
@@ -97,7 +107,11 @@ def main():
     print(f"Clickjacking Detection Results for {url}:")
     for message in messages:
         print(message)
-    
+
+    if vulnerable is None:
+        print("\nINCONCLUSIVE: The target could not be reached, so no clickjacking verdict is available.")
+        sys.exit(1)
+
     if vulnerable:
         print("\nWARNING: The website appears to be vulnerable to clickjacking!")
     else:
