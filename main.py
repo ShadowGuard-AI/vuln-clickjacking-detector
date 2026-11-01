@@ -38,11 +38,17 @@ def check_clickjacking(url):
         x_frame_options = headers.get('X-Frame-Options')
         content_security_policy = headers.get('Content-Security-Policy')
         
+        # I start from vulnerable and let either header clear it on its own.
+        # The two checks never put the flag back to True, so protection in
+        # one header is not undone by a weak or missing second header.
         vulnerable = True
         messages = []
         
         if x_frame_options:
             messages.append(f"X-Frame-Options header found: {x_frame_options}")
+            # Exact match after lowering, so a combined value or an
+            # ALLOW-FROM value does not count as protection here. That is
+            # deliberate: ALLOW-FROM is ignored by most current browsers.
             if x_frame_options.lower() in ['deny', 'sameorigin']:
                 vulnerable = False
                 messages.append("Website is likely protected against clickjacking by X-Frame-Options.")
@@ -56,6 +62,9 @@ def check_clickjacking(url):
                 parts = directive.strip().split()
                 if parts and parts[0].lower() == "frame-ancestors":
                     frame_ancestors_values = [p.lower() for p in parts[1:]]
+                    # The break means the first frame-ancestors directive
+                    # wins. A second one later in the header is never read,
+                    # which matches how browsers take the first occurrence.
                     break
 
             if frame_ancestors_values is not None:
